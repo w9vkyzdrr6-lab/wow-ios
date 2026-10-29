@@ -10,39 +10,111 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Normalize project layout
+      - name: Normalize layout
         run: |
           set -e
-          if [ -f project.pbxproj ]; then
-            mkdir -p AzerothSurvivors.xcodeproj
-            mv project.pbxproj AzerothSurvivors.xcodeproj/project.pbxproj
+          mkdir -p AzerothSurvivors
+          if [ ! -f AzerothSurvivors/App.swift ]; then
+            SRC=$(find . -name 'App.swift' -not -path './.git/*' | head -1)
+            if [ -z "$SRC" ]; then echo "App.swift not found"; exit 1; fi
+            mv "$SRC" AzerothSurvivors/App.swift
           fi
-          if [ -f App.swift ]; then
-            mkdir -p AzerothSurvivors
-            mv App.swift AzerothSurvivors/App.swift
-          fi
-          echo "--- repo layout ---"
-          ls -la
-          ls -la AzerothSurvivors AzerothSurvivors.xcodeproj
+          test -f AzerothSurvivors/App.swift
+          ls -R | head -50
 
-      - name: Build unsigned app
+      - name: Build app bundle
         run: |
-          xcodebuild -project AzerothSurvivors.xcodeproj \
-            -target AzerothSurvivors \
-            -configuration Release \
-            -sdk iphoneos \
-            SYMROOT="$PWD/build" \
-            OBJROOT="$PWD/build/obj" \ \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          APP="AzerothSurvivors.app"
+          rm -rf "$APP" Payload
+          mkdir -p "$APP"
+
+          xcrun --sdk iphoneos swiftc \
+            -parse-as-library \
+            -target arm64-apple-ios16.0 \
+            -sdk "$SDK" \
+            -framework SwiftUI \
+            -framework UIKit \
+            -framework WebKit \
+            -framework Foundation \
+            -O \
+            -o "$APP/AzerothSurvivors" \
+            AzerothSurvivors/App.swift
+
+          chmod +x "$APP/AzerothSurvivors"
+
+          cat > "$APP/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleDisplayName</key>
+            <string>Azeroth Survivors</string>
+            <key>CFBundleExecutable</key>
+            <string>AzerothSurvivors</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.wowsurvivors.player</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>AzerothSurvivors</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundleVersion</key>
+            <string>1</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>MinimumOSVersion</key>
+            <string>16.0</string>
+            <key>CFBundleSupportedPlatforms</key>
+            <array>
+              <string>iPhoneOS</string>
+            </array>
+            <key>UIApplicationSceneManifest</key>
+            <dict>
+              <key>UIApplicationSupportsMultipleScenes</key>
+              <false/>
+            </dict>
+            <key>UILaunchScreen</key>
+            <dict/>
+            <key>UIStatusBarHidden</key>
+            <true/>
+            <key>UIRequiresFullScreen</key>
+            <true/>
+            <key>UIRequiredDeviceCapabilities</key>
+            <array>
+              <string>arm64</string>
+            </array>
+            <key>UIDeviceFamily</key>
+            <array>
+              <integer>1</integer>
+              <integer>2</integer>
+            </array>
+            <key>UISupportedInterfaceOrientations</key>
+            <array>
+              <string>UIInterfaceOrientationPortrait</string>
+              <string>UIInterfaceOrientationLandscapeLeft</string>
+              <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          plutil -lint "$APP/Info.plist"
+          file "$APP/AzerothSurvivors"
 
       - name: Package IPA
         run: |
+          set -e
           mkdir -p Payload
-          cp -r build/Release-iphoneos/AzerothSurvivors.app Payload/
+          cp -r AzerothSurvivors.app Payload/
           zip -r AzerothSurvivors.ipa Payload
+          ls -la AzerothSurvivors.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
