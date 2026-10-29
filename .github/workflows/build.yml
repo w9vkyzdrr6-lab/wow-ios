@@ -31,7 +31,8 @@ jobs:
             -target AzerothSurvivors \
             -configuration Release \
             -sdk iphoneos \
-            -derivedDataPath build \
+            SYMROOT="$PWD/build" \
+            OBJROOT="$PWD/build/obj" \ \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -40,7 +41,7 @@ jobs:
       - name: Package IPA
         run: |
           mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/AzerothSurvivors.app Payload/
+          cp -r build/Release-iphoneos/AzerothSurvivors.app Payload/
           zip -r AzerothSurvivors.ipa Payload
 
       - name: Upload IPA artifact
