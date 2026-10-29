@@ -1,0 +1,50 @@
+name: Build iOS IPA
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Normalize project layout
+        run: |
+          set -e
+          if [ -f project.pbxproj ]; then
+            mkdir -p AzerothSurvivors.xcodeproj
+            mv project.pbxproj AzerothSurvivors.xcodeproj/project.pbxproj
+          fi
+          if [ -f App.swift ]; then
+            mkdir -p AzerothSurvivors
+            mv App.swift AzerothSurvivors/App.swift
+          fi
+          echo "--- repo layout ---"
+          ls -la
+          ls -la AzerothSurvivors AzerothSurvivors.xcodeproj
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project AzerothSurvivors.xcodeproj \
+            -target AzerothSurvivors \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/AzerothSurvivors.app Payload/
+          zip -r AzerothSurvivors.ipa Payload
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzerothSurvivors-ipa
+          path: AzerothSurvivors.ipa
