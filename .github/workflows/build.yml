@@ -28,6 +28,12 @@ jobs:
           test -f AzerothSurvivors/App.swift
           test -f download_site.py
 
+      - name: Cache game data
+        uses: actions/cache@v4
+        with:
+          path: www/data
+          key: wow-site-data-v1
+
       - name: Download game site (~1.5 GB)
         run: python3 download_site.py www
 
