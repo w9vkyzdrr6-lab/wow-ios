@@ -7,6 +7,7 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +20,16 @@ jobs:
             if [ -z "$SRC" ]; then echo "App.swift not found"; exit 1; fi
             mv "$SRC" AzerothSurvivors/App.swift
           fi
+          if [ ! -f download_site.py ]; then
+            SRC=$(find . -name 'download_site.py' -not -path './.git/*' | head -1)
+            if [ -z "$SRC" ]; then echo "download_site.py not found"; exit 1; fi
+            mv "$SRC" download_site.py
+          fi
           test -f AzerothSurvivors/App.swift
-          ls -R | head -50
+          test -f download_site.py
+
+      - name: Download game site (~1.5 GB)
+        run: python3 download_site.py www
 
       - name: Build app bundle
         run: |
@@ -38,11 +47,13 @@ jobs:
             -framework UIKit \
             -framework WebKit \
             -framework Foundation \
+            -framework Network \
             -O \
             -o "$APP/AzerothSurvivors" \
             AzerothSurvivors/App.swift
 
           chmod +x "$APP/AzerothSurvivors"
+          cp -R www "$APP/www"
 
           cat > "$APP/Info.plist" <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -75,6 +86,11 @@ jobs:
             <array>
               <string>iPhoneOS</string>
             </array>
+            <key>NSAppTransportSecurity</key>
+            <dict>
+              <key>NSAllowsLocalNetworking</key>
+              <true/>
+            </dict>
             <key>UIApplicationSceneManifest</key>
             <dict>
               <key>UIApplicationSupportsMultipleScenes</key>
@@ -107,17 +123,19 @@ jobs:
 
           plutil -lint "$APP/Info.plist"
           file "$APP/AzerothSurvivors"
+          du -sh "$APP"
 
       - name: Package IPA
         run: |
           set -e
           mkdir -p Payload
           cp -r AzerothSurvivors.app Payload/
-          zip -r AzerothSurvivors.ipa Payload
-          ls -la AzerothSurvivors.ipa
+          zip -qr AzerothSurvivors.ipa Payload
+          ls -lh AzerothSurvivors.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: AzerothSurvivors-ipa
           path: AzerothSurvivors.ipa
+          retention-days: 7
