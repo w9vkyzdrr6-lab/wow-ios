@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 """Download the full wow.aethus.pl site into ./www for offline bundling.
+- Re-fetches the root modules every run (cheap, always current)
+- Recursively discovers relative imports inside JS modules (e.g. snippets/)
+- Data files are immutable server-side: skipped when already present (cache)
 Usage: python3 download_site.py [outdir]   (default ./www)
 """
 import json
@@ -22,6 +25,8 @@ ROOT_FILES = [
     "world-manifest.json", "wenilla_bg.wasm",
 ]
 
+IMPORT_PAT = re.compile(r"""(?:from\s+|import\s+)['"](\.{1,2}/[^'"]+)['"]""")
+
 def get(url, timeout=120):
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -29,11 +34,12 @@ def get(url, timeout=120):
 
 def save(rel, body):
     dst = os.path.join(OUT, rel.replace("/", os.sep))
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    os.makedirs(os.path.dirname(dst) or OUT, exist_ok=True)
     tmp = dst + ".part"
     with open(tmp, "wb") as f:
         f.write(body)
     os.replace(tmp, dst)
+    return dst
 
 # 1. index page — and learn the build stamp from it
 index = get(BASE + "/").decode("utf-8")
@@ -42,22 +48,35 @@ stamp = "?v=" + m.group(1) if m else ""
 print("build stamp:", stamp or "(none)", flush=True)
 save("index.html", index.encode("utf-8"))
 
-# 2. root modules (parallel-safe small files + the big wasm)
-def fetch_root(name):
+# 2. root modules + recursively discovered relative imports
+seen = set()
+queue = list(ROOT_FILES)
+while queue:
+    name = queue.pop(0)
+    if name in seen:
+        continue
+    seen.add(name)
+    body = None
     for attempt in range(5):
         try:
-            save(name, get(f"{BASE}/{name}{stamp}"))
-            print("ok", name, flush=True)
-            return
+            body = get(f"{BASE}/{name}{stamp}")
+            break
         except Exception as e:
             if attempt == 4:
                 raise RuntimeError(f"{name}: {e}")
             time.sleep(3 * (attempt + 1))
+    dst = save(name, body)
+    print("ok", name, flush=True)
+    if name.endswith(".js"):
+        text = body.decode("utf-8", errors="ignore")
+        base_dir = os.path.dirname(name)
+        for match in IMPORT_PAT.finditer(text):
+            ref = match.group(1).split("?")[0]
+            p = os.path.normpath(os.path.join(base_dir, ref)).replace("\\", "/")
+            if p not in seen and not p.startswith(".."):
+                queue.append(p)
 
-with ThreadPoolExecutor(max_workers=6) as ex:
-    list(ex.map(fetch_root, ROOT_FILES))
-
-# 3. data index + every file it lists
+# 3. data index + every file it lists (skip files already cached)
 save("data/__index", get(f"{BASE}/data/__index{stamp}"))
 names = json.loads(get(f"{BASE}/data/__index{stamp}").decode("utf-8"))
 print("data files:", len(names), flush=True)
@@ -68,11 +87,17 @@ def static_path(name):
 
 lock = threading.Lock()
 done = [0]
+skipped = [0]
 fails = []
 start = time.time()
 
 def fetch_data(name):
     rel = static_path(name)
+    dst = os.path.join(OUT, "data", rel.replace("/", os.sep))
+    if os.path.exists(dst) and os.path.getsize(dst) > 0:
+        with lock:
+            skipped[0] += 1
+        return
     for attempt in range(5):
         try:
             save("data/" + rel, get(f"{BASE}/data/{rel}", timeout=60))
@@ -97,7 +122,7 @@ def fetch_data(name):
 with ThreadPoolExecutor(max_workers=WORKERS) as ex:
     list(ex.map(fetch_data, names))
 
-print(f"DONE ok={len(names)-len(fails)} fail={len(fails)} "
+print(f"DONE fetched={done[0]} cached={skipped[0]} fail={len(fails)} "
       f"elapsed={time.time()-start:.0f}s", flush=True)
 if fails:
     for n, e in fails[:50]:
