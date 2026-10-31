@@ -119,7 +119,11 @@ jobs:
             </array>
             <key>UISupportedInterfaceOrientations</key>
             <array>
-              <string>UIInterfaceOrientationPortrait</string>
+              <string>UIInterfaceOrientationLandscapeLeft</string>
+              <string>UIInterfaceOrientationLandscapeRight</string>
+            </array>
+            <key>UISupportedInterfaceOrientations~ipad</key>
+            <array>
               <string>UIInterfaceOrientationLandscapeLeft</string>
               <string>UIInterfaceOrientationLandscapeRight</string>
             </array>
@@ -130,6 +134,35 @@ jobs:
           plutil -lint "$APP/Info.plist"
           file "$APP/AzerothSurvivors"
           du -sh "$APP"
+
+      - name: Add app icon
+        run: |
+          set -e
+          if [ ! -f icon.png ]; then echo "icon.png not found, skip"; exit 0; fi
+          APP="AzerothSurvivors.app"
+          add() { sips -z "$2" "$2" icon.png --out "$APP/$1" >/dev/null; }
+          add AppIcon20x20@2x.png 40
+          add AppIcon20x20@3x.png 60
+          add AppIcon29x29@2x.png 58
+          add AppIcon29x29@3x.png 87
+          add AppIcon40x40@2x.png 80
+          add AppIcon40x40@3x.png 120
+          add AppIcon60x60@2x.png 120
+          add AppIcon60x60@3x.png 180
+          add AppIcon76x76@2x.png 152
+          add AppIcon83.5x83.5@2x.png 167
+          sips -z 1024 1024 icon.png --out "$APP/AppIcon1024x1024.png" >/dev/null
+          PB=/usr/libexec/PlistBuddy
+          $PB -c "Add :CFBundleIconFiles array" \
+              -c "Add :CFBundleIconFiles:0 string AppIcon60x60" \
+              -c "Add :CFBundleIconFiles:1 string AppIcon76x76" \
+              -c "Add :CFBundleIconFiles:2 string AppIcon83.5x83.5" \
+              -c "Add :CFBundleIcons dict" \
+              -c "Add :CFBundleIcons:CFBundlePrimaryIcon dict" \
+              -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles array" \
+              -c "Add :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconFiles:0 string AppIcon60x60" \
+              "$APP/Info.plist"
+          plutil -lint "$APP/Info.plist"
 
       - name: Package IPA
         run: |
