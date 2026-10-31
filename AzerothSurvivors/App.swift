@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 import Network
 import Foundation
@@ -150,8 +151,18 @@ struct WebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
+// MARK: - 强制横屏：游戏本身就是横屏设计，进入即锁定，不再跟随手机陀螺仪
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        .landscape
+    }
+}
+
 @main
 struct AzerothSurvivorsApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let server: LocalHTTPServer
     private let startURL: URL
 
