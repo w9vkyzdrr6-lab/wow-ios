@@ -3,10 +3,35 @@ import UIKit
 import WebKit
 import Network
 import Foundation
+import Combine
 
-// MARK: - Minimal localhost HTTP server (serves the bundled site)
-// WKWebView cannot run ES modules / WASM over file:// (CORS), so we serve the
-// game over http://127.0.0.1 — which is also a secure context, so WebGPU works.
+// MARK: - 诊断信息收集（显示在屏幕左上角，点击可隐藏/显示）
+
+final class Diagnostics: ObservableObject {
+    static let shared = Diagnostics()
+    @Published var lines: [String] = []
+    @Published var okCount = 0
+    @Published var missCount = 0
+    private let lock = NSLock()
+
+    func add(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        DispatchQueue.main.async {
+            self.lines.append(String(trimmed.prefix(220)))
+            if self.lines.count > 60 { self.lines.removeFirst(self.lines.count - 60) }
+        }
+    }
+
+    func count(ok: Bool) {
+        DispatchQueue.main.async {
+            if ok { self.okCount += 1 } else { self.missCount += 1 }
+        }
+    }
+}
+
+// MARK: - 内置本地 HTTP 服务器（避免 file:// 的 CORS 限制，同时满足 WebGPU 的 secure context 要求）
+
 final class LocalHTTPServer {
     private var listener: NWListener?
     private let root: URL
@@ -20,16 +45,14 @@ final class LocalHTTPServer {
         params.requiredInterfaceType = .loopback
         let listener = try NWListener(using: params, on: .any)
         listener.stateUpdateHandler = { [weak self] state in
-            if case .ready = state {
-                self?.port = listener.port?.rawValue ?? 0
-            }
+            if case .ready = state { self?.port = listener.port?.rawValue ?? 0 }
         }
         listener.newConnectionHandler = { [weak self] conn in
             self?.handle(connection: conn)
         }
         listener.start(queue: queue)
         self.listener = listener
-        for _ in 0..<200 where port == 0 { usleep(10_000) } // wait up to 2 s
+        for _ in 0..<200 where port == 0 { usleep(10_000) }
     }
 
     private func handle(connection: NWConnection) {
@@ -77,10 +100,13 @@ final class LocalHTTPServer {
               let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
               let size = attrs[.size] as? Int64,
               let handle = try? FileHandle(forReadingFrom: file) else {
+            Diagnostics.shared.count(ok: false)
+            Diagnostics.shared.add("404 \(decoded)")
             send(conn, status: "404 Not Found", type: "text/plain", length: 9, head: true)
             return
         }
 
+        Diagnostics.shared.count(ok: true)
         send(conn, status: "200 OK", type: mimeType(file.pathExtension),
              length: size, head: method == "HEAD", body: handle)
     }
@@ -132,7 +158,41 @@ final class LocalHTTPServer {
     }
 }
 
-// MARK: - Fullscreen WebView
+// MARK: - 捕获网页 console 输出
+
+final class ConsoleHandler: NSObject, WKScriptMessageHandler {
+    func userContentController(_ userContentController: WKUserContentController,
+                              didReceive message: WKScriptMessage) {
+        if let text = message.body as? String {
+            Diagnostics.shared.add(text)
+        }
+    }
+}
+
+private let consoleHookJS = """
+(function () {
+  function send(level, args) {
+    try {
+      var text = level + ' ' + Array.prototype.map.call(args, function (a) {
+        if (a instanceof Error) return a.message;
+        if (typeof a === 'object') { try { return JSON.stringify(a); } catch (e) { return String(a); } }
+        return String(a);
+      }).join(' ');
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.diag) {
+        window.webkit.messageHandlers.diag.postMessage(text);
+      }
+    } catch (e) {}
+  }
+  ['error', 'warn'].forEach(function (k) {
+    var orig = console[k];
+    console[k] = function () { send(k.toUpperCase(), arguments); if (orig) orig.apply(console, arguments); };
+  });
+  window.addEventListener('error', function (e) { send('ERROR', [e.message + ' @' + e.filename + ':' + e.lineno]); });
+  window.addEventListener('unhandledrejection', function (e) { send('REJECT', [String(e.reason)]); });
+})();
+"""
+
+// MARK: - 全屏 WebView
 
 struct WebView: UIViewRepresentable {
     let url: URL
@@ -141,6 +201,12 @@ struct WebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
+        let controller = WKUserContentController()
+        controller.add(ConsoleHandler(), name: "diag")
+        controller.addUserScript(WKUserScript(source: consoleHookJS,
+                                              injectionTime: .atDocumentStart,
+                                              forMainFrameOnly: false))
+        config.userContentController = controller
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.scrollView.contentInsetAdjustmentBehavior = .never
         webView.isOpaque = true
@@ -151,7 +217,44 @@ struct WebView: UIViewRepresentable {
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 }
 
-// MARK: - 强制横屏：游戏本身就是横屏设计，进入即锁定，不再跟随手机陀螺仪
+// MARK: - 诊断浮层：点击可隐藏
+
+struct DiagOverlay: View {
+    @ObservedObject var diag = Diagnostics.shared
+    @State private var visible = true
+
+    var body: some View {
+        Group {
+            if visible {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("HTTP ok \(diag.okCount) / 404 \(diag.missCount)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(diag.missCount > 0 ? .orange : .green)
+                    ForEach(Array(diag.lines.suffix(28).enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 8, design: .monospaced))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(6)
+                .frame(width: 560, alignment: .leading)
+                .background(Color.black.opacity(0.75))
+                .overlay(Rectangle().stroke(Color.white.opacity(0.25), lineWidth: 1))
+                .position(x: 290, y: 150)
+                .onTapGesture { visible = false }
+            } else {
+                Color.clear
+                    .frame(width: 70, height: 70)
+                    .contentShape(Rectangle())
+                    .position(x: 35, y: 35)
+                    .onTapGesture { visible = true }
+            }
+        }
+    }
+}
+
+// MARK: - 强制横屏
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
@@ -176,10 +279,13 @@ struct AzerothSurvivorsApp: App {
 
     var body: some Scene {
         WindowGroup {
-            WebView(url: startURL)
-                .ignoresSafeArea()
-                .statusBarHidden(true)
-                .background(Color.black)
+            ZStack {
+                WebView(url: startURL)
+                    .ignoresSafeArea()
+                DiagOverlay()
+            }
+            .statusBarHidden(true)
+            .background(Color.black)
         }
     }
 }
