@@ -82,8 +82,13 @@ names = json.loads(get(f"{BASE}/data/__index{stamp}").decode("utf-8"))
 print("data files:", len(names), flush=True)
 
 def static_path(name):
+    """磁盘相对路径：小写、反斜杠转斜杠、保持原始字符（不做 URL 编码）"""
     segs = [s for s in name.lower().replace("\\", "/").split("/") if s]
-    return "/".join(urllib.parse.quote(s) for s in segs)
+    return "/".join(segs)
+
+def url_path(rel):
+    """URL 路径：逐段 percent-encode（磁盘文件名不编码）"""
+    return "/".join(urllib.parse.quote(s) for s in rel.split("/"))
 
 lock = threading.Lock()
 done = [0]
@@ -97,27 +102,32 @@ def fetch_data(name):
     if os.path.exists(dst) and os.path.getsize(dst) > 0:
         with lock:
             skipped[0] += 1
-        return
-    for attempt in range(5):
+        return True
+    for attempt in range(10):
         try:
-            save("data/" + rel, get(f"{BASE}/data/{rel}", timeout=60))
+            save("data/" + rel, get(f"{BASE}/data/{url_path(rel)}", timeout=90))
             with lock:
                 done[0] += 1
                 if done[0] % 1000 == 0:
                     print(f"data {done[0]}/{len(names)}", flush=True)
-            return
+            return True
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                time.sleep(5 * (attempt + 1)); continue
-            if e.code in (500, 502, 503, 504) and attempt < 4:
-                time.sleep(2 * (attempt + 1)); continue
-            with lock: fails.append((name, str(e)))
-            return
+                time.sleep(min(60, 8 * (attempt + 1))); continue
+            if e.code in (500, 502, 503, 504) and attempt < 9:
+                time.sleep(3 * (attempt + 1)); continue
+            if e.code == 404:
+                with lock: fails.append((name, "404"))
+                return False
+            time.sleep(3 * (attempt + 1))
         except Exception as e:
-            if attempt < 4:
-                time.sleep(2 * (attempt + 1)); continue
+            if attempt < 9:
+                time.sleep(3 * (attempt + 1)); continue
             with lock: fails.append((name, str(e)))
-            return
+            return False
+    # 重试全部耗尽（常见于持续 429）：必须记为失败，不能静默跳过
+    with lock: fails.append((name, "retry-exhausted"))
+    return False
 
 with ThreadPoolExecutor(max_workers=WORKERS) as ex:
     list(ex.map(fetch_data, names))
@@ -128,3 +138,49 @@ if fails:
     for n, e in fails[:50]:
         print("FAIL", n, e, flush=True)
     sys.exit(1)
+
+# 4. 清理历史缓存里带 %XX 编码名的旧文件（命名 bug 的残留）
+removed = 0
+for root, _, files in os.walk(os.path.join(OUT, "data")):
+    for f in files:
+        if "%" in f:
+            os.remove(os.path.join(root, f))
+            removed += 1
+if removed:
+    print("cleanup: removed", removed, "legacy %-named files", flush=True)
+
+# 5. 完整性校验：boot/world 清单 + __index 全部必须在磁盘上（解码名），缺的串行补下
+want = set("data/" + static_path(n) for n in names)
+for mf in ("boot-manifest.json", "world-manifest.json"):
+    try:
+        d = json.load(open(os.path.join(OUT, mf), encoding="utf-8"))
+        want.update("data/" + static_path(n) for n in d["names"])
+    except Exception as e:
+        print("WARN manifest check skipped:", mf, e, flush=True)
+
+absent = [r for r in sorted(want)
+          if not os.path.exists(os.path.join(OUT, r.replace("/", os.sep)))]
+if absent:
+    print("verify: patching", len(absent), "missing files serially", flush=True)
+    still = []
+    for rel in absent:
+        ok = False
+        for attempt in range(12):
+            try:
+                save(rel, get(f"{BASE}/{url_path(rel)}", timeout=90))
+                ok = True
+                break
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    break
+                time.sleep(min(60, 6 * (attempt + 1)))
+            except Exception:
+                time.sleep(min(60, 5 * (attempt + 1)))
+        if not ok:
+            still.append(rel)
+    if still:
+        for rel in still[:50]:
+            print("STILL-MISSING", rel, flush=True)
+        print(f"verify FAILED: {len(still)} files unavailable", flush=True)
+        sys.exit(1)
+print("verify OK: all manifest files present", flush=True)
