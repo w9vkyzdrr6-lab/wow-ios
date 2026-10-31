@@ -10,23 +10,29 @@ import Combine
 final class Diagnostics: ObservableObject {
     static let shared = Diagnostics()
     @Published var lines: [String] = []
+    @Published var recent: [String] = []
     @Published var okCount = 0
     @Published var missCount = 0
-    private let lock = NSLock()
 
     func add(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         DispatchQueue.main.async {
-            self.lines.append(String(trimmed.prefix(220)))
-            if self.lines.count > 60 { self.lines.removeFirst(self.lines.count - 60) }
+            self.lines.append(String(trimmed.prefix(240)))
+            if self.lines.count > 90 { self.lines.removeFirst(self.lines.count - 90) }
+        }
+    }
+
+    func request(_ path: String, ok: Bool) {
+        DispatchQueue.main.async {
+            if ok { self.okCount += 1 } else { self.missCount += 1 }
+            self.recent.append((ok ? "ok  " : "404 ") + String(path.prefix(120)))
+            if self.recent.count > 12 { self.recent.removeFirst(self.recent.count - 12) }
         }
     }
 
     func count(ok: Bool) {
-        DispatchQueue.main.async {
-            if ok { self.okCount += 1 } else { self.missCount += 1 }
-        }
+        request("", ok: ok)
     }
 }
 
@@ -114,17 +120,24 @@ final class LocalHTTPServer {
 
         var isDir: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: file.path, isDirectory: &isDir)
+
+        // Cloudflare 的统计埋点，离线包内不存在，直接给空响应避免噪音
+        if decoded.hasPrefix("/cdn-cgi/") {
+            Diagnostics.shared.request(decoded, ok: true)
+            send(conn, status: "204 No Content", type: "text/plain", length: 0, head: true)
+            return
+        }
+
         guard exists, !isDir.boolValue,
               let attrs = try? FileManager.default.attributesOfItem(atPath: file.path),
               let size = attrs[.size] as? Int64,
               let handle = try? FileHandle(forReadingFrom: file) else {
-            Diagnostics.shared.count(ok: false)
-            Diagnostics.shared.add("404 \(decoded)")
+            Diagnostics.shared.request(decoded, ok: false)
             send(conn, status: "404 Not Found", type: "text/plain", length: 9, head: true)
             return
         }
 
-        Diagnostics.shared.count(ok: true)
+        Diagnostics.shared.request(decoded, ok: true)
         send(conn, status: "200 OK", type: mimeType(file.pathExtension),
              length: size, head: method == "HEAD", body: handle)
     }
@@ -201,7 +214,7 @@ private let consoleHookJS = """
       }
     } catch (e) {}
   }
-  ['error', 'warn'].forEach(function (k) {
+  ['log', 'info', 'debug', 'warn', 'error'].forEach(function (k) {
     var orig = console[k];
     console[k] = function () { send(k.toUpperCase(), arguments); if (orig) orig.apply(console, arguments); };
   });
@@ -246,9 +259,16 @@ struct DiagOverlay: View {
             if visible {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("HTTP ok \(diag.okCount) / 404 \(diag.missCount)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(diag.missCount > 0 ? .orange : .green)
-                    ForEach(Array(diag.lines.suffix(28).enumerated()), id: \.offset) { _, line in
+                    ForEach(Array(diag.recent.suffix(6).enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundColor(Color(white: 0.55))
+                            .lineLimit(1)
+                    }
+                    Divider().background(Color.white.opacity(0.2))
+                    ForEach(Array(diag.lines.suffix(34).enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 8, design: .monospaced))
                             .foregroundColor(.white)
@@ -256,10 +276,10 @@ struct DiagOverlay: View {
                     }
                 }
                 .padding(6)
-                .frame(width: 560, alignment: .leading)
-                .background(Color.black.opacity(0.75))
+                .frame(width: 800, alignment: .leading)
+                .background(Color.black.opacity(0.82))
                 .overlay(Rectangle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-                .position(x: 290, y: 150)
+                .position(x: 410, y: 250)
                 .onTapGesture { visible = false }
             } else {
                 Color.clear
