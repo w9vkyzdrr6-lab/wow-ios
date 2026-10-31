@@ -44,15 +44,33 @@ final class LocalHTTPServer {
         let params = NWParameters.tcp
         params.requiredInterfaceType = .loopback
         let listener = try NWListener(using: params, on: .any)
-        listener.stateUpdateHandler = { [weak self] state in
-            if case .ready = state { self?.port = listener.port?.rawValue ?? 0 }
+        let sem = DispatchSemaphore(value: 0)
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            switch state {
+            case .ready:
+                self?.port = listener?.port?.rawValue ?? 0
+                sem.signal()
+            case .failed, .cancelled:
+                sem.signal()
+            default:
+                break
+            }
         }
         listener.newConnectionHandler = { [weak self] conn in
             self?.handle(connection: conn)
         }
         listener.start(queue: queue)
         self.listener = listener
-        for _ in 0..<200 where port == 0 { usleep(10_000) }
+        if sem.wait(timeout: .now() + 5) == .timedOut {
+            listener.cancel()
+            throw NSError(domain: "httpserver", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "监听超时"])
+        }
+        guard port != 0 else {
+            listener.cancel()
+            throw NSError(domain: "httpserver", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "未分配到端口"])
+        }
     }
 
     private func handle(connection: NWConnection) {
@@ -268,21 +286,46 @@ struct AzerothSurvivorsApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let server: LocalHTTPServer
     private let startURL: URL
+    private let bootError: String
 
     init() {
         let root = Bundle.main.resourceURL!.appendingPathComponent("www", isDirectory: true)
-        let server = LocalHTTPServer(root: root)
-        try! server.start()
-        self.server = server
-        self.startURL = URL(string: "http://127.0.0.1:\(server.port)/index.html")!
+        var started: LocalHTTPServer?
+        var lastError = ""
+        for _ in 0..<3 {
+            let candidate = LocalHTTPServer(root: root)
+            do {
+                try candidate.start()
+                started = candidate
+                break
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+        if let ready = started {
+            self.server = ready
+            self.startURL = URL(string: "http://127.0.0.1:\(ready.port)/index.html")!
+            self.bootError = ""
+        } else {
+            self.server = LocalHTTPServer(root: root)
+            self.startURL = URL(string: "about:blank")!
+            self.bootError = "本地服务器启动失败：\(lastError)"
+        }
     }
 
     var body: some Scene {
         WindowGroup {
             ZStack {
-                WebView(url: startURL)
-                    .ignoresSafeArea()
-                DiagOverlay()
+                if bootError.isEmpty {
+                    WebView(url: startURL)
+                        .ignoresSafeArea()
+                    DiagOverlay()
+                } else {
+                    Text(bootError)
+                        .font(.system(size: 16, design: .monospaced))
+                        .foregroundColor(.red)
+                        .padding()
+                }
             }
             .statusBarHidden(true)
             .background(Color.black)
