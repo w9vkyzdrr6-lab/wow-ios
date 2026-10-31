@@ -37,6 +37,9 @@ jobs:
       - name: Download game site (~1.5 GB)
         run: python3 download_site.py www
 
+      - name: Patch site for iOS (GPU workarounds)
+        run: python3 patch_site.py www
+
       - name: Build app bundle
         run: |
           set -e
