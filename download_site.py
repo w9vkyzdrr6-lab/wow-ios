@@ -23,6 +23,8 @@ ROOT_FILES = [
     "rogue.css", "rogue.js", "wasi_stubs.js", "addons.js", "saves.js",
     "ime.js", "wenilla.js", "boot.js", "boot-manifest.json",
     "world-manifest.json", "wenilla_bg.wasm",
+    # 客户端运行时会额外读取、但不在 __index 清单里的文件（漏了会导致中文缺字/加载异常）
+    "data/fonts/azs_sc.ttf",
 ]
 
 IMPORT_PAT = re.compile(r"""(?:from\s+|import\s+)['"](\.{1,2}/[^'"]+)['"]""")
