@@ -13,13 +13,24 @@ final class Diagnostics: ObservableObject {
     @Published var recent: [String] = []
     @Published var okCount = 0
     @Published var missCount = 0
+    @Published var heartbeat = "—"
+    @Published var lastAt = Date.distantPast
+    private let t0 = Date()
 
     func add(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         DispatchQueue.main.async {
-            self.lines.append(String(trimmed.prefix(240)))
+            let age = Int(Date().timeIntervalSince(self.t0))
+            self.lines.append(String(format: "%4ds ", age) + String(trimmed.prefix(220)))
             if self.lines.count > 90 { self.lines.removeFirst(self.lines.count - 90) }
+            self.lastAt = Date()
+        }
+    }
+
+    func beat(_ text: String) {
+        DispatchQueue.main.async {
+            self.heartbeat = text
         }
     }
 
@@ -195,7 +206,11 @@ final class ConsoleHandler: NSObject, WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController,
                               didReceive message: WKScriptMessage) {
         if let text = message.body as? String {
-            Diagnostics.shared.add(text)
+            if text.hasPrefix("HB ") {
+                Diagnostics.shared.beat(String(text.dropFirst(3)))
+            } else {
+                Diagnostics.shared.add(text)
+            }
         }
     }
 }
@@ -220,6 +235,48 @@ private let consoleHookJS = """
   });
   window.addEventListener('error', function (e) { send('ERROR', [e.message + ' @' + e.filename + ':' + e.lineno]); });
   window.addEventListener('unhandledrejection', function (e) { send('REJECT', [String(e.reason)]); });
+
+  // GPU 管线日志：记录每次 createRenderPipeline/ComputePipeline 的请求，
+  // 心跳会带上最后一个请求的 label —— 若 GPU 进程卡死，它就是凶手。
+  try {
+    var dev = globalThis.GPUDevice && globalThis.GPUDevice.prototype;
+    if (dev) {
+      window.__azsPipes = { seq: 0, last: '-' };
+      ['createRenderPipeline', 'createComputePipeline',
+       'createRenderPipelineAsync', 'createComputePipelineAsync'].forEach(function (name) {
+        var orig = dev[name];
+        if (!orig) return;
+        dev[name] = function (desc) {
+          var n = ++window.__azsPipes.seq;
+          var vs = desc && desc.vertex && desc.vertex.entryPoint || '';
+          var fs = desc && desc.fragment && desc.fragment.entryPoint || '';
+          window.__azsPipes.last = '#' + n + ' ' + name.replace('create', '').replace('Pipeline', '') +
+            ' ' + ((desc && desc.label) || '?') + ' ' + vs + '/' + fs;
+          return orig.call(this, desc);
+        };
+      });
+    }
+  } catch (e) {}
+
+  // 包装 boot.js 的进度回调，把阶段名也送进日志
+  try {
+    var prog = null;
+    Object.defineProperty(window, '__wenilla_progress', {
+      configurable: true,
+      get: function () { return prog; },
+      set: function (fn) {
+        prog = function (stage) { send('STAGE', [stage]); return fn(stage); };
+      }
+    });
+  } catch (e) {}
+
+  // 心跳：证明 JS 主线程是否还活着（wasm 同步卡死时心跳会停）
+  setInterval(function () {
+    var p = window.__azsPipes;
+    var text = 't=' + Math.round(performance.now() / 1000) + 's pipes=' + (p ? p.seq : 0);
+    if (p && p.last !== '-') text += ' last=' + p.last;
+    send('HB', [text]);
+  }, 3000);
 })();
 """
 
@@ -253,6 +310,12 @@ struct WebView: UIViewRepresentable {
 struct DiagOverlay: View {
     @ObservedObject var diag = Diagnostics.shared
     @State private var visible = true
+    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var hbLine: String {
+        let age = diag.lastAt == .distantPast ? -1 : Int(Date().timeIntervalSince(diag.lastAt))
+        return "HB \(diag.heartbeat) · 最后日志 \(age < 0 ? "—" : "\(age)s 前")"
+    }
 
     var body: some View {
         Group {
@@ -261,6 +324,10 @@ struct DiagOverlay: View {
                     Text("HTTP ok \(diag.okCount) / 404 \(diag.missCount)")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(diag.missCount > 0 ? .orange : .green)
+                    Text(self.hbLine)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.cyan)
+                        .lineLimit(1)
                     ForEach(Array(diag.recent.suffix(4).enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 7, design: .monospaced))
@@ -268,7 +335,7 @@ struct DiagOverlay: View {
                             .lineLimit(1)
                     }
                     Divider().background(Color.white.opacity(0.2))
-                    ForEach(Array(diag.lines.suffix(20).enumerated()), id: \.offset) { _, line in
+                    ForEach(Array(diag.lines.suffix(18).enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 8, design: .monospaced))
                             .foregroundColor(.white)
@@ -279,8 +346,9 @@ struct DiagOverlay: View {
                 .frame(width: 800, alignment: .leading)
                 .background(Color.black.opacity(0.82))
                 .overlay(Rectangle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-                .position(x: 410, y: 190)
+                .position(x: 410, y: 185)
                 .onTapGesture { visible = false }
+                .onReceive(ticker) { _ in }
             } else {
                 Color.clear
                     .frame(width: 70, height: 70)
