@@ -261,14 +261,14 @@ struct DiagOverlay: View {
                     Text("HTTP ok \(diag.okCount) / 404 \(diag.missCount)")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(diag.missCount > 0 ? .orange : .green)
-                    ForEach(Array(diag.recent.suffix(6).enumerated()), id: \.offset) { _, line in
+                    ForEach(Array(diag.recent.suffix(4).enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 7, design: .monospaced))
                             .foregroundColor(Color(white: 0.55))
                             .lineLimit(1)
                     }
                     Divider().background(Color.white.opacity(0.2))
-                    ForEach(Array(diag.lines.suffix(34).enumerated()), id: \.offset) { _, line in
+                    ForEach(Array(diag.lines.suffix(20).enumerated()), id: \.offset) { _, line in
                         Text(line)
                             .font(.system(size: 8, design: .monospaced))
                             .foregroundColor(.white)
@@ -279,7 +279,7 @@ struct DiagOverlay: View {
                 .frame(width: 800, alignment: .leading)
                 .background(Color.black.opacity(0.82))
                 .overlay(Rectangle().stroke(Color.white.opacity(0.25), lineWidth: 1))
-                .position(x: 410, y: 250)
+                .position(x: 410, y: 190)
                 .onTapGesture { visible = false }
             } else {
                 Color.clear
