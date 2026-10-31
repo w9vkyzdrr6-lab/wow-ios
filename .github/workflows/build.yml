@@ -172,6 +172,21 @@ jobs:
           zip -qr AzerothSurvivors.ipa Payload
           ls -lh AzerothSurvivors.ipa
 
+      - name: Pack app shell (quick transfer)
+        run: |
+          set -e
+          rm -rf shell && mkdir -p shell
+          rsync -a --exclude www AzerothSurvivors.app shell/
+          cd shell && zip -qr ../AzerothSurvivors-shell.zip AzerothSurvivors.app
+          ls -lh ../AzerothSurvivors-shell.zip
+
+      - name: Upload app shell artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-shell
+          path: AzerothSurvivors-shell.zip
+          retention-days: 7
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
